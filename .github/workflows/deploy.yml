@@ -1,0 +1,60 @@
+name: Deploy to ECS
+
+on:
+  push:
+    branches:
+      - main  # Change to your desired branch (e.g., 'main', 'master')
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      # Step 1: Checkout the code
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      # Step 2: Set up AWS CLI
+      - name: Set up AWS CLI
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: 'us-west-2' # Change to your desired region
+
+      # Step 3: Build Docker image and push to ECR
+      - name: Build and push Docker image to ECR
+        run: |
+          # Log in to Amazon ECR
+          aws ecr get-login-password --region ${{ secrets.AWS_REGION }} | docker login --username AWS --password-stdin ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com
+
+          # Build the Docker image
+          docker build -t my-app .
+
+          # Tag the Docker image
+          docker tag my-app:latest ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/my-app:latest
+
+          # Push the Docker image to ECR
+          docker push ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/my-app:latest
+
+      # Step 4: Create a new ECS task definition revision
+      - name: Register new ECS Task Definition
+        run: |
+          # Create a new task definition from the old one and register the new one
+          ecs_task_definition=$(aws ecs describe-task-definition --task-definition my-app-task-definition)
+          family_name=$(echo $ecs_task_definition | jq -r '.taskDefinition.family')
+          container_definition=$(echo $ecs_task_definition | jq -r '.taskDefinition.containerDefinitions')
+
+          # Register the new task definition with updated image
+          aws ecs register-task-definition \
+            --family $family_name \
+            --container-definitions "$(echo $container_definition | jq '.[0] | .image = "'"${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/my-app:latest"'")'"
+
+      # Step 5: Update ECS service with the new task definition
+      - name: Update ECS Service
+        run: |
+          # Update ECS service with the new task definition
+          aws ecs update-service \
+            --cluster my-cluster \
+            --service my-service \
+            --task-definition my-app-task-definition
